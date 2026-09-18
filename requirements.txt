@@ -1,2 +1,11 @@
-
-kagglehub 
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+streamlit
+imbalanced-learn
+joblib
+scipy
+kagglehub
+jupyter
