@@ -1,1 +1,3 @@
 "data/raw/*.csv" 
+venv/ 
+notebooks/ .ipynb_checkpoints/ 
