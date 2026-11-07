@@ -1,3 +1,4 @@
+
 import os
  
 import kagglehub
@@ -11,9 +12,14 @@ st.set_page_config(
     page_title="Détection d'intrusions UNSW-NB15",
     page_icon="🛡️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
  
-
+# ---------------------------------------------------------------------------
+# Palette de couleurs (comme dans les outils de supervision : vert = normal,
+# rouge/orange = attaque). Chaque type de connexion garde la même couleur
+# dans tous les graphiques.
+# ---------------------------------------------------------------------------
 COULEUR_NORMAL = "#2ecc71"
 COULEUR_ATTAQUE = "#e74c3c"
 COULEUR_NEUTRE = "#1f77b4"
@@ -34,7 +40,9 @@ PALETTE_TYPES = {
 }
  
  
-
+# ---------------------------------------------------------------------------
+# Fonctions utilitaires
+# ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Chargement du dataset (le premier lancement peut être long)...")
 def load_data():
     path = kagglehub.dataset_download("mrwellsdavid/unsw-nb15")
@@ -48,7 +56,7 @@ def style_graphiques():
     try:
         sombre = st.context.theme.type == "dark"
     except Exception:
-        sombre = False  
+        sombre = False  # version de Streamlit trop ancienne : on reste en clair
     couleur = "#e8ecf4" if sombre else "#1c2333"
     return {
         "text.color": couleur,
@@ -73,12 +81,20 @@ def format_nombre(n):
     return f"{int(n):,}".replace(",", " ")
  
  
-
+def astuce_theme():
+    """Rappel visible : Streamlit ne permet de changer de thème que par son menu."""
+    st.caption("🎨 Thème clair / sombre : menu ⋮ en haut à droite → Settings → Theme")
+ 
+ 
+# ===========================================================================
+# PAGE 1 : ACCUEIL
+# ===========================================================================
 def page_accueil():
     df_complet = load_data()
  
     st.title("🛡️ Détection d'intrusions réseau par Machine Learning")
     st.caption("Mini-projet Data Mining 2026/2027")
+    astuce_theme()
  
     st.markdown(
         """
@@ -140,11 +156,17 @@ def page_accueil():
     st.dataframe(descriptions, hide_index=True, use_container_width=True)
  
  
-
+# ===========================================================================
+# PAGE 2 : EXPLORATION DES DONNÉES (EDA)
+# ===========================================================================
 def page_exploration():
     df_complet = load_data()
  
-
+    # -----------------------------------------------------------------------
+    # Barre latérale : filtres interactifs
+    # Le DataFrame filtré s'appelle "df" : tous les onglets se mettent à jour
+    # automatiquement quand on change les filtres.
+    # -----------------------------------------------------------------------
     st.sidebar.header("🔎 Filtres")
  
     types = sorted(df_complet["attack_cat"].unique())
@@ -171,9 +193,12 @@ def page_exploration():
         f"{format_nombre(len(df))} lignes sélectionnées sur {format_nombre(len(df_complet))}"
     )
  
-
+    # -----------------------------------------------------------------------
+    # En-tête et cartes de chiffres clés
+    # -----------------------------------------------------------------------
     st.title("📊 Exploration des données")
     st.caption("Dashboard d'exploration (EDA) - dataset UNSW-NB15")
+    astuce_theme()
  
     nb_attaques = int((df["label"] == 1).sum())
     nb_normales = int((df["label"] == 0).sum())
@@ -183,7 +208,10 @@ def page_exploration():
     c2.metric("🟢 Normales", format_nombre(nb_normales))
     c3.metric("🔴 Attaques", format_nombre(nb_attaques))
     c4.metric("Part d'attaques", f"{df['label'].mean() * 100:.1f} %")
-
+ 
+    # -----------------------------------------------------------------------
+    # Onglets
+    # -----------------------------------------------------------------------
     onglet0, onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
         [
             "🏠 Vue d'ensemble",
@@ -195,7 +223,7 @@ def page_exploration():
         ]
     )
  
-
+    # --- Vue d'ensemble : anneau normal/attaque et classement des types -----
     with onglet0:
         st.subheader("Vue d'ensemble")
  
@@ -230,7 +258,8 @@ def page_exploration():
                 ax.margins(x=0.12)
                 st.pyplot(fig)
                 plt.close(fig)
-
+ 
+    # --- Élément 1 : statistiques descriptives -----------------------------
     with onglet1:
         st.subheader("Statistiques descriptives")
         st.write("Aperçu des premières lignes :")
@@ -246,7 +275,7 @@ def page_exploration():
             mime="text/csv",
         )
  
-
+    # --- Élément 2 : valeurs manquantes ------------------------------------
     with onglet2:
         st.subheader("Valeurs manquantes")
  
@@ -268,7 +297,8 @@ def page_exploration():
             tirets = (df.select_dtypes(exclude="number") == "-").sum()
             st.write("Valeurs inconnues notées « - » (colonnes texte) :")
             st.bar_chart(tirets, color=COULEUR_NEUTRE)
-
+ 
+    # --- Élément 3 : distributions des variables numériques ----------------
     with onglet3:
         st.subheader("Distributions des variables numériques")
  
@@ -311,7 +341,7 @@ def page_exploration():
             st.pyplot(fig)
             plt.close(fig)
  
-
+    # --- Élément 4 : fréquences des variables catégorielles ----------------
     with onglet4:
         st.subheader("Fréquences des variables catégorielles")
  
@@ -338,7 +368,8 @@ def page_exploration():
             st.bar_chart(frequences.head(nb_max), color=COULEUR_NEUTRE)
         with droite:
             st.dataframe(tableau_freq.head(nb_max), use_container_width=True)
-
+ 
+    # --- Élément 5 : matrice de corrélation --------------------------------
     with onglet5:
         st.subheader("Matrice de corrélation")
  
@@ -361,9 +392,12 @@ def page_exploration():
             st.dataframe(top.rename("Corrélation"), use_container_width=True)
  
  
-
+# ===========================================================================
+# PAGE 3 : À PROPOS
+# ===========================================================================
 def page_apropos():
     st.title("ℹ️ À propos du projet")
+    astuce_theme()
  
     st.subheader("Le dataset")
     st.markdown(
@@ -398,13 +432,16 @@ def page_apropos():
     st.dataframe(equipe, hide_index=True)
  
  
-
+# ===========================================================================
+# NAVIGATION
+# ===========================================================================
 pages = [
     st.Page(page_accueil, title="Accueil", icon="🏠", default=True),
     st.Page(page_exploration, title="Exploration des données", icon="📊", url_path="exploration"),
     st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos"),
 ]
  
-navigation = st.navigation(pages)
+navigation = st.navigation(pages, position="top")
 navigation.run()
  
+
