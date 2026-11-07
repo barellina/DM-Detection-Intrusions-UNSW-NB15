@@ -79,3 +79,27 @@ tableau = pd.DataFrame({
     "Pourcentage (%)": (frequences / len(df) * 100).round(2),
 })
 st.dataframe(tableau.head(nb_max))
+
+st.subheader("5. Matrice de corrélation")
+
+methode = st.radio("Méthode de corrélation :", ["spearman", "pearson"], horizontal=True)
+
+
+@st.cache_data
+def calculer_correlation(methode):
+    num = df.select_dtypes(include="number").drop(columns=["id"])
+    echantillon = num.sample(min(len(num), 30000), random_state=42)
+    return echantillon.corr(method=methode)
+
+
+corr = calculer_correlation(methode)
+
+fig, ax = plt.subplots(figsize=(14, 11))
+sns.heatmap(corr, cmap="coolwarm", center=0, ax=ax)
+ax.set_title(f"Matrice de corrélation ({methode})")
+st.pyplot(fig)
+plt.close(fig)
+
+st.write("Les 10 variables les plus corrélées avec la cible (label) :")
+top = corr["label"].drop("label").sort_values(key=abs, ascending=False).head(10)
+st.dataframe(top.rename("Corrélation"))
