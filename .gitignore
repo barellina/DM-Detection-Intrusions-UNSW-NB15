@@ -1,6 +1,5 @@
-"data/raw/*.csv" 
-venv/ 
-notebooks/ .ipynb_checkpoints/ 
+venv/
+.ipynb_checkpoints\/n__pycache__/
+*.pyc
+data/raw/*.csv.
 data/processed/*.joblib
-
-.ipynb_checkpoints/
