@@ -14,10 +14,28 @@ st.set_page_config(
     layout="wide",
 )
  
+
+COULEUR_NORMAL = "#2ecc71"
+COULEUR_ATTAQUE = "#e74c3c"
+COULEUR_NEUTRE = "#1f77b4"
  
-# ---------------------------------------------------------------------------
-# Fonctions utilitaires
-# ---------------------------------------------------------------------------
+PALETTE_CLASSES = {"Normal": COULEUR_NORMAL, "Attaque": COULEUR_ATTAQUE}
+ 
+PALETTE_TYPES = {
+    "Normal": "#2ecc71",
+    "Generic": "#e74c3c",
+    "Exploits": "#e67e22",
+    "Fuzzers": "#f1c40f",
+    "DoS": "#c0392b",
+    "Reconnaissance": "#9b59b6",
+    "Analysis": "#1abc9c",
+    "Backdoor": "#ff6f91",
+    "Shellcode": "#00a8cc",
+    "Worms": "#8d6e63",
+}
+ 
+ 
+
 @st.cache_data(show_spinner="Chargement du dataset (le premier lancement peut être long)...")
 def load_data():
     path = kagglehub.dataset_download("mrwellsdavid/unsw-nb15")
@@ -31,7 +49,7 @@ def style_graphiques():
     try:
         sombre = st.context.theme.type == "dark"
     except Exception:
-        sombre = False  # version de Streamlit trop ancienne : on reste en clair
+        sombre = False  
     couleur = "#e8ecf4" if sombre else "#1c2333"
     return {
         "text.color": couleur,
@@ -53,11 +71,7 @@ def calculer_correlation(data, methode):
  
 df_complet = load_data()
  
-# ---------------------------------------------------------------------------
-# Barre latérale : filtres interactifs
-# Le DataFrame filtré s'appelle "df" : tous les onglets se mettent à jour
-# automatiquement quand on change les filtres.
-# ---------------------------------------------------------------------------
+
 st.sidebar.header("🔎 Filtres")
  
 types = sorted(df_complet["attack_cat"].unique())
@@ -82,23 +96,23 @@ if df.empty:
  
 st.sidebar.success(f"{len(df):,} lignes sélectionnées sur {len(df_complet):,}".replace(",", " "))
  
-# ---------------------------------------------------------------------------
-# En-tête et cartes de chiffres clés
-# ---------------------------------------------------------------------------
+
 st.title("🛡️ Détection d'intrusions réseau")
 st.caption("Dashboard d'exploration des données (EDA) - dataset UNSW-NB15")
  
+nb_attaques = int((df["label"] == 1).sum())
+nb_normales = int((df["label"] == 0).sum())
+ 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Connexions", f"{len(df):,}".replace(",", " "))
-c2.metric("Colonnes", df.shape[1])
-c3.metric("Part d'attaques", f"{df['label'].mean() * 100:.1f} %")
-c4.metric("Types de connexion", df["attack_cat"].nunique())
+c2.metric("🟢 Normales", f"{nb_normales:,}".replace(",", " "))
+c3.metric("🔴 Attaques", f"{nb_attaques:,}".replace(",", " "))
+c4.metric("Part d'attaques", f"{df['label'].mean() * 100:.1f} %")
  
-# ---------------------------------------------------------------------------
-# Onglets
-# ---------------------------------------------------------------------------
-onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
+
+onglet0, onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
     [
+        "🏠 Vue d'ensemble",
         "📊 Statistiques",
         "❓ Valeurs manquantes",
         "📈 Distributions",
@@ -107,7 +121,43 @@ onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
     ]
 )
  
-# --- Élément 1 : statistiques descriptives ---------------------------------
+
+with onglet0:
+    st.subheader("Vue d'ensemble")
+ 
+    gauche, droite = st.columns([1, 2])
+ 
+    with gauche:
+        st.write("Répartition normal / attaque :")
+        with plt.rc_context(style_graphiques()):
+            fig, ax = plt.subplots(figsize=(4.5, 4.5))
+            ax.pie(
+                [nb_normales, nb_attaques],
+                labels=["Normal", "Attaque"],
+                colors=[COULEUR_NORMAL, COULEUR_ATTAQUE],
+                autopct="%1.1f%%",
+                startangle=90,
+                wedgeprops={"width": 0.4},
+                textprops={"color": plt.rcParams["text.color"]},
+            )
+            ax.set_aspect("equal")
+            st.pyplot(fig)
+            plt.close(fig)
+ 
+    with droite:
+        st.write("Nombre de connexions par type :")
+        effectifs = df["attack_cat"].value_counts().sort_values()
+        couleurs = [PALETTE_TYPES.get(t, "#888888") for t in effectifs.index]
+        with plt.rc_context(style_graphiques()):
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            barres = ax.barh(effectifs.index, effectifs.values, color=couleurs)
+            ax.bar_label(barres, padding=3)
+            ax.set_xlabel("Nombre de connexions")
+            ax.margins(x=0.12)
+            st.pyplot(fig)
+            plt.close(fig)
+ 
+
 with onglet1:
     st.subheader("Statistiques descriptives")
     st.write("Aperçu des premières lignes :")
@@ -123,7 +173,7 @@ with onglet1:
         mime="text/csv",
     )
  
-# --- Élément 2 : valeurs manquantes ----------------------------------------
+
 with onglet2:
     st.subheader("Valeurs manquantes")
  
@@ -144,9 +194,9 @@ with onglet2:
         # Valeurs inconnues cachées sous forme de tiret "-"
         tirets = (df.select_dtypes(exclude="number") == "-").sum()
         st.write("Valeurs inconnues notées « - » (colonnes texte) :")
-        st.bar_chart(tirets)
+        st.bar_chart(tirets, color=COULEUR_NEUTRE)
  
-# --- Élément 3 : distributions des variables numériques --------------------
+
 with onglet3:
     st.subheader("Distributions des variables numériques")
  
@@ -164,17 +214,32 @@ with onglet3:
     donnees = df[col]
     if echelle_log:
         donnees = np.log1p(donnees)
-    echantillon = donnees.sample(min(len(donnees), 20000), random_state=42)
+ 
+    tableau_dist = pd.DataFrame(
+        {"valeur": donnees, "Classe": df["label"].map({0: "Normal", 1: "Attaque"})}
+    )
+    tableau_dist = tableau_dist.sample(min(len(tableau_dist), 20000), random_state=42)
  
     with plt.rc_context(style_graphiques()):
         fig, ax = plt.subplots(figsize=(9, 4))
-        sns.histplot(echantillon, bins=50, kde=True, ax=ax, color="#1f77b4")
+        sns.histplot(
+            data=tableau_dist,
+            x="valeur",
+            hue="Classe",
+            palette=PALETTE_CLASSES,
+            bins=50,
+            kde=True,
+            stat="density",
+            common_norm=False,
+            element="step",
+            ax=ax,
+        )
         ax.set_xlabel(f"log(1 + {col})" if echelle_log else col)
-        ax.set_ylabel("Nombre de lignes")
+        ax.set_ylabel("Densité")
         st.pyplot(fig)
         plt.close(fig)
  
-# --- Élément 4 : fréquences des variables catégorielles --------------------
+
 with onglet4:
     st.subheader("Fréquences des variables catégorielles")
  
@@ -198,11 +263,10 @@ with onglet4:
  
     gauche, droite = st.columns([2, 1])
     with gauche:
-        st.bar_chart(frequences.head(nb_max))
+        st.bar_chart(frequences.head(nb_max), color=COULEUR_NEUTRE)
     with droite:
         st.dataframe(tableau_freq.head(nb_max), use_container_width=True)
- 
-# --- Élément 5 : matrice de corrélation ------------------------------------
+
 with onglet5:
     st.subheader("Matrice de corrélation")
  
