@@ -1,3 +1,4 @@
 "data/raw/*.csv" 
 venv/ 
 notebooks/ .ipynb_checkpoints/ 
+data/processed/*.joblib
