@@ -2,3 +2,5 @@
 venv/ 
 notebooks/ .ipynb_checkpoints/ 
 data/processed/*.joblib
+
+.ipynb_checkpoints/
