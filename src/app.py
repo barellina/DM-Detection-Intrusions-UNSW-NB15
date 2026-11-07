@@ -20,3 +20,19 @@ st.write(f"{df.shape[0]} lignes et {df.shape[1]} colonnes")
 
 st.subheader("1. Statistiques descriptives")
 st.dataframe(df.describe().T)
+
+st.subheader("2. Valeurs manquantes")
+
+
+manquantes = df.isnull().sum()
+tableau = pd.DataFrame({
+    "Valeurs manquantes": manquantes,
+    "Taux de présence (%)": ((1 - manquantes / len(df)) * 100).round(2),
+})
+st.write(f"Total de cases vides : {int(manquantes.sum())}")
+st.dataframe(tableau)
+
+
+tirets = (df.select_dtypes(exclude="number") == "-").sum()
+st.write("Valeurs inconnues notées « - » (colonnes texte) :")
+st.bar_chart(tirets)
