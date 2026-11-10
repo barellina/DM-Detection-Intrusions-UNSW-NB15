@@ -1,10 +1,9 @@
 import os
  
+import altair as alt
 import kagglehub
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import streamlit as st
  
 st.set_page_config(
@@ -18,6 +17,9 @@ st.set_page_config(
 COULEUR_NORMAL = "#2ecc71"
 COULEUR_ATTAQUE = "#e74c3c"
 COULEUR_NEUTRE = "#1f77b4"
+COULEUR_ORANGE = "#e67e22"
+COULEUR_VIOLET = "#9b59b6"
+COULEUR_TURQUOISE = "#1abc9c"
  
 PALETTE_CLASSES = {"Normal": COULEUR_NORMAL, "Attaque": COULEUR_ATTAQUE}
  
@@ -34,32 +36,82 @@ PALETTE_TYPES = {
     "Worms": "#8d6e63",
 }
  
+ECHELLE_CLASSES = alt.Scale(
+    domain=list(PALETTE_CLASSES.keys()), range=list(PALETTE_CLASSES.values())
+)
+ECHELLE_TYPES = alt.Scale(
+    domain=list(PALETTE_TYPES.keys()), range=list(PALETTE_TYPES.values())
+)
+ 
+
+CSS = """
+<style>
+.carte {
+    border-radius: 14px;
+    padding: 16px 18px;
+    margin-bottom: 0.6rem;
+    border-left: 6px solid var(--c);
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--c) 24%, transparent),
+        color-mix(in srgb, var(--c) 6%, transparent));
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.carte:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 20px color-mix(in srgb, var(--c) 35%, transparent);
+}
+.carte-titre { font-size: 0.9rem; opacity: 0.85; }
+.carte-valeur { font-size: 2.1rem; font-weight: 700; line-height: 1.25; }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+ 
  
 
 @st.cache_data(show_spinner="Chargement du dataset (le premier lancement peut être long)...")
 def load_data():
     path = kagglehub.dataset_download("mrwellsdavid/unsw-nb15")
-    # Dans ce dataset Kaggle, les noms de fichiers sont inversés :
-    # "testing-set" contient le gros fichier (175 341 lignes)
+   
     return pd.read_csv(os.path.join(path, "UNSW_NB15_testing-set.csv"))
  
  
-def style_graphiques():
-    """Couleurs des graphiques matplotlib/seaborn adaptées au thème clair ou sombre."""
+def couleur_texte():
+    """Couleur du texte dessiné dans les graphiques, adaptée au thème clair ou sombre."""
     try:
         sombre = st.context.theme.type == "dark"
     except Exception:
-        sombre = False  #
-    couleur = "#e8ecf4" if sombre else "#1c2333"
-    return {
-        "text.color": couleur,
-        "axes.labelcolor": couleur,
-        "axes.edgecolor": couleur,
-        "xtick.color": couleur,
-        "ytick.color": couleur,
-        "figure.facecolor": "none",
-        "axes.facecolor": "none",
-    }
+        sombre = False
+    return "#e8ecf4" if sombre else "#1c2333"
+ 
+ 
+def carte(titre, valeur, couleur):
+    """Carte de chiffre clé colorée."""
+    st.markdown(
+        f"""
+        <div class="carte" style="--c: {couleur};">
+            <div class="carte-titre">{titre}</div>
+            <div class="carte-valeur">{valeur}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+ 
+ 
+def format_nombre(n):
+    """Écrit 175341 sous la forme 175 341."""
+    return f"{int(n):,}".replace(",", " ")
+ 
+ 
+def courbe_densite(valeurs, grille):
+    """Estimation de densité (KDE gaussien) calculée avec numpy."""
+    valeurs = np.asarray(valeurs, dtype=float)
+    n = len(valeurs)
+    ecart = valeurs.std()
+    if n < 2 or ecart == 0:
+        return np.zeros_like(grille)
+    h = 1.06 * ecart * n ** (-0.2)
+    dens = np.array([np.exp(-0.5 * ((g - valeurs) / h) ** 2).sum() for g in grille])
+    return dens / (n * h * np.sqrt(2 * np.pi))
  
  
 @st.cache_data
@@ -67,11 +119,6 @@ def calculer_correlation(data, methode):
     num = data.select_dtypes(include="number").drop(columns=["id"])
     echantillon = num.sample(min(len(num), 30000), random_state=42)
     return echantillon.corr(method=methode)
- 
- 
-def format_nombre(n):
-    """Écrit 175341 sous la forme 175 341."""
-    return f"{int(n):,}".replace(",", " ")
  
  
 
@@ -91,9 +138,12 @@ def page_accueil():
     )
  
     c1, c2, c3 = st.columns(3)
-    c1.metric("Connexions étudiées", format_nombre(len(df_complet)))
-    c2.metric("Colonnes", df_complet.shape[1])
-    c3.metric("Types de connexion", df_complet["attack_cat"].nunique())
+    with c1:
+        carte("Connexions étudiées", format_nombre(len(df_complet)), COULEUR_NEUTRE)
+    with c2:
+        carte("Colonnes", df_complet.shape[1], COULEUR_VIOLET)
+    with c3:
+        carte("Types de connexion", df_complet["attack_cat"].nunique(), COULEUR_TURQUOISE)
  
     st.subheader("Les types de connexion du dataset")
     descriptions = pd.DataFrame(
@@ -126,8 +176,7 @@ def page_accueil():
     )
     effectifs = df_complet["attack_cat"].value_counts()
     descriptions["Connexions"] = descriptions["Type"].map(effectifs).apply(format_nombre)
-    st.dataframe(descriptions, hide_index=True, use_container_width=True)
- 
+    st.dataframe(descriptions, hide_index=True)
  
 
 def page_exploration():
@@ -167,10 +216,14 @@ def page_exploration():
     nb_normales = int((df["label"] == 0).sum())
  
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Connexions", format_nombre(len(df)))
-    c2.metric("🟢 Normales", format_nombre(nb_normales))
-    c3.metric("🔴 Attaques", format_nombre(nb_attaques))
-    c4.metric("Part d'attaques", f"{df['label'].mean() * 100:.1f} %")
+    with c1:
+        carte("Connexions", format_nombre(len(df)), COULEUR_NEUTRE)
+    with c2:
+        carte("🟢 Normales", format_nombre(nb_normales), COULEUR_NORMAL)
+    with c3:
+        carte("🔴 Attaques", format_nombre(nb_attaques), COULEUR_ATTAQUE)
+    with c4:
+        carte("Part d'attaques", f"{df['label'].mean() * 100:.1f} %", COULEUR_ORANGE)
  
 
     onglet0, onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
@@ -183,52 +236,96 @@ def page_exploration():
             "🔗 Corrélation",
         ]
     )
- 
 
     with onglet0:
         st.subheader("Vue d'ensemble")
+        st.caption(
+            "Passe la souris sur les graphiques pour voir les valeurs exactes. "
+            "Clique sur la légende de l'anneau pour isoler une classe."
+        )
  
         gauche, droite = st.columns([1, 2])
  
         with gauche:
-            st.write("Répartition normal / attaque :")
-            with plt.rc_context(style_graphiques()):
-                fig, ax = plt.subplots(figsize=(4.5, 4.5))
-                ax.pie(
-                    [nb_normales, nb_attaques],
-                    labels=["Normal", "Attaque"],
-                    colors=[COULEUR_NORMAL, COULEUR_ATTAQUE],
-                    autopct="%1.1f%%",
-                    startangle=90,
-                    wedgeprops={"width": 0.4},
-                    textprops={"color": plt.rcParams["text.color"]},
+            with st.container(border=True):
+                st.write("Répartition normal / attaque")
+                total = nb_normales + nb_attaques
+                df_anneau = pd.DataFrame(
+                    {
+                        "Classe": ["Normal", "Attaque"],
+                        "Connexions": [nb_normales, nb_attaques],
+                    }
                 )
-                ax.set_aspect("equal")
-                st.pyplot(fig)
-                plt.close(fig)
+                df_anneau["Part"] = df_anneau["Connexions"] / total
+ 
+                selection = alt.selection_point(fields=["Classe"], bind="legend")
+                anneau = (
+                    alt.Chart(df_anneau)
+                    .mark_arc(innerRadius=70, outerRadius=130)
+                    .encode(
+                        theta=alt.Theta("Connexions:Q"),
+                        color=alt.Color(
+                            "Classe:N",
+                            scale=ECHELLE_CLASSES,
+                            legend=alt.Legend(orient="bottom", title=None),
+                        ),
+                        opacity=alt.condition(selection, alt.value(1), alt.value(0.25)),
+                        tooltip=[
+                            alt.Tooltip("Classe:N", title="Classe"),
+                            alt.Tooltip("Connexions:Q", title="Connexions", format=","),
+                            alt.Tooltip("Part:Q", title="Part", format=".1%"),
+                        ],
+                    )
+                    .add_params(selection)
+                    .properties(height=320)
+                )
+                centre = (
+                    alt.Chart(pd.DataFrame({"texte": [f"{nb_attaques / total * 100:.1f} %"]}))
+                    .mark_text(size=30, fontWeight="bold", color=couleur_texte())
+                    .encode(text="texte:N")
+                )
+                st.altair_chart(anneau + centre)
  
         with droite:
-            st.write("Nombre de connexions par type :")
-            effectifs = df["attack_cat"].value_counts().sort_values()
-            couleurs = [PALETTE_TYPES.get(t, "#888888") for t in effectifs.index]
-            with plt.rc_context(style_graphiques()):
-                fig, ax = plt.subplots(figsize=(7, 4.5))
-                barres = ax.barh(effectifs.index, effectifs.values, color=couleurs)
-                ax.bar_label(barres, padding=3)
-                ax.set_xlabel("Nombre de connexions")
-                ax.margins(x=0.12)
-                st.pyplot(fig)
-                plt.close(fig)
+            with st.container(border=True):
+                st.write("Nombre de connexions par type")
+                effectifs = df["attack_cat"].value_counts()
+                df_types = pd.DataFrame(
+                    {
+                        "Type": effectifs.index.astype(str),
+                        "Connexions": effectifs.values,
+                    }
+                )
+                df_types["Part"] = df_types["Connexions"] / len(df)
+ 
+                barres = (
+                    alt.Chart(df_types)
+                    .mark_bar()
+                    .encode(
+                        y=alt.Y("Type:N", sort="-x", title=None),
+                        x=alt.X("Connexions:Q", title="Nombre de connexions"),
+                        color=alt.Color("Type:N", scale=ECHELLE_TYPES, legend=None),
+                        tooltip=[
+                            alt.Tooltip("Type:N", title="Type"),
+                            alt.Tooltip("Connexions:Q", title="Connexions", format=","),
+                            alt.Tooltip("Part:Q", title="Part", format=".1%"),
+                        ],
+                    )
+                )
+                valeurs = barres.mark_text(
+                    align="left", dx=4, color=couleur_texte()
+                ).encode(text=alt.Text("Connexions:Q", format=","))
+                st.altair_chart((barres + valeurs).properties(height=330))
  
 
     with onglet1:
         st.subheader("Statistiques descriptives")
         st.write("Aperçu des premières lignes :")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.dataframe(df.head(10))
  
         stats = df.describe().T
         st.write("Résumé de chaque variable numérique :")
-        st.dataframe(stats, use_container_width=True)
+        st.dataframe(stats)
         st.download_button(
             "Télécharger les statistiques (CSV)",
             stats.to_csv().encode("utf-8"),
@@ -251,13 +348,15 @@ def page_exploration():
  
         gauche, droite = st.columns(2)
         with gauche:
-            st.write("Taux de présence par colonne :")
-            st.dataframe(tableau_manquantes, use_container_width=True)
+            with st.container(border=True):
+                st.write("Taux de présence par colonne")
+                st.dataframe(tableau_manquantes)
         with droite:
-            # Valeurs inconnues cachées sous forme de tiret "-"
-            tirets = (df.select_dtypes(exclude="number") == "-").sum()
-            st.write("Valeurs inconnues notées « - » (colonnes texte) :")
-            st.bar_chart(tirets, color=COULEUR_NEUTRE)
+            with st.container(border=True):
+                
+                tirets = (df.select_dtypes(exclude="number") == "-").sum()
+                st.write("Valeurs inconnues notées « - » (colonnes texte)")
+                st.bar_chart(tirets, color=COULEUR_ORANGE)
  
 
     with onglet3:
@@ -283,24 +382,72 @@ def page_exploration():
         )
         tableau_dist = tableau_dist.sample(min(len(tableau_dist), 20000), random_state=42)
  
-        with plt.rc_context(style_graphiques()):
-            fig, ax = plt.subplots(figsize=(9, 4))
-            sns.histplot(
-                data=tableau_dist,
-                x="valeur",
-                hue="Classe",
-                palette=PALETTE_CLASSES,
-                bins=50,
-                kde=True,
-                stat="density",
-                common_norm=False,
-                element="step",
-                ax=ax,
+
+        xmin = float(tableau_dist["valeur"].min())
+        xmax = float(tableau_dist["valeur"].max())
+        if xmax == xmin:
+            xmax = xmin + 1.0
+        bornes = np.linspace(xmin, xmax, 51)
+        grille = np.linspace(xmin, xmax, 200)
+ 
+        lignes_hist, lignes_kde = [], []
+        for classe in ["Normal", "Attaque"]:
+            vals = tableau_dist.loc[tableau_dist["Classe"] == classe, "valeur"].to_numpy()
+            if len(vals) == 0:
+                continue
+            dens, _ = np.histogram(vals, bins=bornes, density=True)
+            lignes_hist.append(
+                pd.DataFrame(
+                    {"debut": bornes[:-1], "fin": bornes[1:], "densite": dens, "Classe": classe}
+                )
             )
-            ax.set_xlabel(f"log(1 + {col})" if echelle_log else col)
-            ax.set_ylabel("Densité")
-            st.pyplot(fig)
-            plt.close(fig)
+            sous = vals if len(vals) <= 5000 else np.random.default_rng(42).choice(
+                vals, 5000, replace=False
+            )
+            lignes_kde.append(
+                pd.DataFrame(
+                    {
+                        "valeur": grille,
+                        "densite": courbe_densite(sous, grille),
+                        "Classe": classe,
+                    }
+                )
+            )
+        df_hist = pd.concat(lignes_hist, ignore_index=True)
+        df_kde = pd.concat(lignes_kde, ignore_index=True)
+ 
+        titre_x = f"log(1 + {col})" if echelle_log else col
+        histogramme = (
+            alt.Chart(df_hist)
+            .mark_bar(opacity=0.35)
+            .encode(
+                x=alt.X("debut:Q", title=titre_x),
+                x2="fin:Q",
+                y=alt.Y("densite:Q", title="Densité"),
+                color=alt.Color("Classe:N", scale=ECHELLE_CLASSES),
+                tooltip=[
+                    alt.Tooltip("Classe:N", title="Classe"),
+                    alt.Tooltip("debut:Q", title="De", format=".2f"),
+                    alt.Tooltip("fin:Q", title="À", format=".2f"),
+                    alt.Tooltip("densite:Q", title="Densité", format=".4f"),
+                ],
+            )
+        )
+        courbes = (
+            alt.Chart(df_kde)
+            .mark_line(strokeWidth=3)
+            .encode(
+                x=alt.X("valeur:Q"),
+                y=alt.Y("densite:Q"),
+                color=alt.Color("Classe:N", scale=ECHELLE_CLASSES),
+            )
+        )
+ 
+        with st.container(border=True):
+            st.caption(
+                "Molette pour zoomer, glisser pour déplacer, double-clic pour revenir à la vue initiale."
+            )
+            st.altair_chart((histogramme + courbes).properties(height=380).interactive())
  
 
     with onglet4:
@@ -319,16 +466,32 @@ def page_exploration():
  
         tableau_freq = pd.DataFrame(
             {
-                "Effectif": frequences,
-                "Pourcentage (%)": (frequences / len(df) * 100).round(2),
+                "Catégorie": frequences.index.astype(str),
+                "Effectif": frequences.values,
+                "Pourcentage (%)": (frequences.values / len(df) * 100).round(2),
             }
-        )
+        ).head(nb_max)
  
         gauche, droite = st.columns([2, 1])
         with gauche:
-            st.bar_chart(frequences.head(nb_max), color=COULEUR_NEUTRE)
+            with st.container(border=True):
+                graphique_freq = (
+                    alt.Chart(tableau_freq)
+                    .mark_bar(color=COULEUR_NEUTRE)
+                    .encode(
+                        y=alt.Y("Catégorie:N", sort="-x", title=None),
+                        x=alt.X("Effectif:Q", title="Effectif"),
+                        tooltip=[
+                            alt.Tooltip("Catégorie:N", title="Catégorie"),
+                            alt.Tooltip("Effectif:Q", title="Effectif", format=","),
+                            alt.Tooltip("Pourcentage (%):Q", title="Pourcentage (%)"),
+                        ],
+                    )
+                    .properties(height=max(200, 32 * len(tableau_freq)))
+                )
+                st.altair_chart(graphique_freq)
         with droite:
-            st.dataframe(tableau_freq.head(nb_max), use_container_width=True)
+            st.dataframe(tableau_freq, hide_index=True)
  
 
     with onglet5:
@@ -337,20 +500,48 @@ def page_exploration():
         methode = st.radio("Méthode de corrélation :", ["spearman", "pearson"], horizontal=True)
         corr = calculer_correlation(df, methode)
  
+        corr_longue = corr.stack().rename_axis(["x", "y"]).reset_index(name="correlation")
+ 
         gauche, droite = st.columns([3, 1])
         with gauche:
-            with plt.rc_context(style_graphiques()):
-                fig, ax = plt.subplots(figsize=(13, 10))
-                sns.heatmap(corr, cmap="coolwarm", center=0, ax=ax)
-                ax.set_title(f"Matrice de corrélation ({methode})")
-                st.pyplot(fig)
-                plt.close(fig)
+            with st.container(border=True):
+                st.caption("Passe la souris sur une case pour voir les deux variables et leur corrélation.")
+                heatmap = (
+                    alt.Chart(corr_longue)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X(
+                            "x:N",
+                            sort=list(corr.columns),
+                            title=None,
+                            axis=alt.Axis(labelAngle=-90),
+                        ),
+                        y=alt.Y("y:N", sort=list(corr.index), title=None),
+                        color=alt.Color(
+                            "correlation:Q",
+                            scale=alt.Scale(scheme="redblue", domain=[-1, 1], reverse=True),
+                            legend=alt.Legend(title="Corrélation"),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("x:N", title="Variable 1"),
+                            alt.Tooltip("y:N", title="Variable 2"),
+                            alt.Tooltip("correlation:Q", title="Corrélation", format=".2f"),
+                        ],
+                    )
+                    .properties(height=700)
+                )
+                st.altair_chart(heatmap)
         with droite:
-            st.write("Les 10 variables les plus corrélées avec la cible (label) :")
-            top = (
-                corr["label"].drop("label").dropna().sort_values(key=abs, ascending=False).head(10)
-            )
-            st.dataframe(top.rename("Corrélation"), use_container_width=True)
+            with st.container(border=True):
+                st.write("Les 10 variables les plus corrélées avec la cible (label) :")
+                top = (
+                    corr["label"]
+                    .drop("label")
+                    .dropna()
+                    .sort_values(key=abs, ascending=False)
+                    .head(10)
+                )
+                st.dataframe(top.rename("Corrélation"))
  
  
 
@@ -391,13 +582,26 @@ def page_apropos():
  
  
 
-pages = [
-    st.Page(page_accueil, title="Accueil", icon="🏠", default=True),
-    st.Page(page_exploration, title="Exploration des données", icon="📊", url_path="exploration"),
-    st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos"),
-]
+page_accueil_obj = st.Page(page_accueil, title="Accueil", icon="🏠", default=True)
+page_exploration_obj = st.Page(
+    page_exploration, title="Exploration des données", icon="📊", url_path="exploration"
+)
+page_apropos_obj = st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos")
  
-navigation = st.navigation(pages, position="top")
+navigation = st.navigation(
+    [page_accueil_obj, page_exploration_obj, page_apropos_obj], position="hidden"
+)
+ 
+with st.container(border=True):
+    colonnes = st.columns([3, 1.3, 2.4, 1.3])
+    colonnes[0].markdown("#### 🛡️ IDS · UNSW-NB15")
+    with colonnes[1]:
+        st.page_link(page_accueil_obj, label="Accueil", icon="🏠")
+    with colonnes[2]:
+        st.page_link(page_exploration_obj, label="Exploration des données", icon="📊")
+    with colonnes[3]:
+        st.page_link(page_apropos_obj, label="À propos", icon="ℹ️")
+ 
 navigation.run()
  
 
