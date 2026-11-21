@@ -1,0 +1,5 @@
+Modèle,Meilleurs hyperparamètres,F1 validation croisée
+Arbre de decision,"{'criterion': 'entropy', 'max_depth': 20, 'min_samples_leaf': 1}",0.9638
+Naive Bayes (Gaussian),{'var_smoothing': 1e-05},0.8078
+Naive Bayes (Bernoulli),{'alpha': 0.01},0.7813
+K-NN (sous-echantillon 20000),"{'metric': 'manhattan', 'n_neighbors': 21, 'weights': 'distance'}",0.9568
