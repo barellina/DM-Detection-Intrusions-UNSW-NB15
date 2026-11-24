@@ -5,6 +5,12 @@ import kagglehub
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from models import charger_modele, predire, predire_lot  # noqa: E402
+from preprocessing import exemples_doublons, rapport_qualite  # noqa: E402
  
 st.set_page_config(
     page_title="Détection d'intrusions UNSW-NB15",
@@ -545,6 +551,465 @@ def page_exploration():
  
  
 
+@st.cache_data(show_spinner="Analyse de la qualité des données...")
+def analyser_qualite(data):
+    return rapport_qualite(data)
+
+
+@st.cache_data
+def lignes_dupliquees(data):
+    return exemples_doublons(data)
+
+
+def page_controle_qualite():
+    st.title("🧪 Contrôle qualité des données")
+    st.write(
+        "Avant de modéliser, on vérifie que les données sont saines : types des colonnes, "
+        "valeurs manquantes ou inconnues, doublons, valeurs aberrantes et cohérence entre les colonnes. "
+        "Tu peux contrôler le jeu UNSW-NB15 ou importer ton propre fichier CSV."
+    )
+
+    source = st.radio(
+        "Données à contrôler :",
+        ["Jeu UNSW-NB15 (entraînement)", "Importer un fichier CSV"],
+        horizontal=True,
+    )
+    if source.startswith("Jeu"):
+        df = load_data()
+    else:
+        fichier = st.file_uploader("Choisis un fichier CSV", type="csv")
+        if fichier is None:
+            st.info("Importe un fichier CSV pour lancer le contrôle.")
+            st.stop()
+        try:
+            df = pd.read_csv(fichier)
+        except Exception as erreur:
+            st.error(f"Impossible de lire ce fichier : {erreur}")
+            st.stop()
+        if df.empty:
+            st.warning("Le fichier ne contient aucune ligne.")
+            st.stop()
+
+    rapport = analyser_qualite(df)
+    resume = rapport["resume"]
+    types = rapport["types"]
+    coherence = rapport["coherence"]
+
+    nb_types_inattendus = int((types["Conforme"] != "✅").sum())
+    nb_controles_defaut = int((coherence["Verdict"] != "✅ OK").sum())
+    nb_alertes = (
+        nb_types_inattendus
+        + nb_controles_defaut
+        + int(resume["manquantes"] > 0)
+        + int(resume["doublons"] > 0)
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        carte("Lignes × colonnes", f"{format_nombre(resume['lignes'])} × {resume['colonnes']}", COULEUR_NEUTRE)
+    with c2:
+        carte("Valeurs manquantes", format_nombre(resume["manquantes"]), COULEUR_TURQUOISE)
+    with c3:
+        carte("Lignes dupliquées", format_nombre(resume["doublons"]), COULEUR_ORANGE)
+    with c4:
+        carte("Alertes", str(nb_alertes), COULEUR_ATTAQUE if nb_alertes else COULEUR_NORMAL)
+
+    if nb_alertes == 0:
+        st.success("Aucun problème détecté sur les types, les valeurs manquantes, les doublons et la cohérence.")
+    else:
+        st.warning(
+            f"{nb_alertes} point(s) à examiner : {nb_types_inattendus} type(s) de colonne inattendu(s), "
+            f"{nb_controles_defaut} contrôle(s) de cohérence en défaut, "
+            f"{format_nombre(resume['manquantes'])} case(s) vide(s), "
+            f"{format_nombre(resume['doublons'])} ligne(s) dupliquée(s)."
+        )
+
+    onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
+        [
+            "🔤 Types",
+            "❓ Manquantes et inconnues",
+            "♊ Doublons",
+            "📏 Valeurs aberrantes",
+            "✅ Cohérence",
+        ]
+    )
+
+    with onglet1:
+        st.subheader("Types des colonnes")
+        st.caption(
+            "Chaque colonne est comparée à son rôle attendu : variable numérique, variable "
+            "catégorielle (proto, service, state), cible (label, attack_cat) ou identifiant."
+        )
+        st.dataframe(types, hide_index=True)
+        st.download_button(
+            "Télécharger le tableau des types (CSV)",
+            types.to_csv(index=False).encode("utf-8"),
+            file_name="controle_types.csv",
+            mime="text/csv",
+        )
+
+    with onglet2:
+        st.subheader("Valeurs manquantes et valeurs inconnues")
+        gauche, droite = st.columns(2)
+        with gauche:
+            with st.container(border=True):
+                st.write("Cases vides par colonne")
+                st.dataframe(
+                    types[["Colonne", "Manquantes", "Taux manquant (%)"]], hide_index=True
+                )
+        with droite:
+            with st.container(border=True):
+                st.write("Valeurs inconnues codées « - » (colonnes texte)")
+                inconnues = rapport["inconnues"]
+                st.dataframe(inconnues, hide_index=True)
+                if not inconnues.empty:
+                    st.bar_chart(inconnues.set_index("Colonne")["Part (%)"], color=COULEUR_ORANGE)
+        st.caption(
+            "Une valeur « - » n'est pas une case vide pour pandas, mais c'est une information "
+            "manquante en pratique : elle doit être traitée explicitement (par exemple comme une catégorie à part)."
+        )
+
+    with onglet3:
+        st.subheader("Doublons")
+        st.write(
+            f"**{format_nombre(resume['doublons'])}** ligne(s) identique(s) à une autre "
+            f"({resume['doublons'] / resume['lignes'] * 100:.2f} % du jeu). "
+            "L'identifiant (`id`) est ignoré dans la comparaison, car il est unique par construction."
+        )
+        st.caption(
+            "Des lignes identiques réparties entre l'entraînement et la validation peuvent gonfler "
+            "artificiellement les scores d'un modèle."
+        )
+        if resume["doublons"] > 0:
+            st.write("Exemples (toutes les copies des premières lignes concernées) :")
+            st.dataframe(lignes_dupliquees(df), hide_index=True)
+
+    with onglet4:
+        st.subheader("Valeurs aberrantes (méthode de l'écart interquartile)")
+        st.caption(
+            "Une valeur est signalée si elle sort de l'intervalle [Q1 - 1,5 × IQR ; Q3 + 1,5 × IQR]. "
+            "Pour UNSW-NB15, ces valeurs extrêmes sont souvent des attaques : elles sont conservées."
+        )
+        aberrantes = rapport["aberrantes"]
+        if aberrantes.empty:
+            st.info("Aucune variable numérique à analyser.")
+        else:
+            st.dataframe(aberrantes, hide_index=True)
+            st.write("Part de valeurs hors bornes (15 variables les plus touchées)")
+            st.bar_chart(aberrantes.head(15).set_index("Variable")["Part (%)"], color=COULEUR_VIOLET)
+
+    with onglet5:
+        st.subheader("Contrôles de cohérence")
+        st.dataframe(coherence, hide_index=True)
+        st.download_button(
+            "Télécharger les contrôles (CSV)",
+            coherence.to_csv(index=False).encode("utf-8"),
+            file_name="controle_coherence.csv",
+            mime="text/csv",
+        )
+
+
+@st.cache_resource(show_spinner="Chargement du modèle...")
+def charger_ressources_modele():
+    return charger_modele()
+
+
+@st.cache_data(show_spinner="Calcul des prédictions...")
+def calculer_probabilites(data, _preprocesseur, _modele, _infos):
+    return predire_lot(data, _preprocesseur, _modele, _infos)
+
+
+def afficher_resultats_lot(donnees, probabilites, seuil):
+    """Cartes, graphique, tableau téléchargeable et, si le fichier a une colonne label, évaluation."""
+    est_attaque = probabilites >= seuil
+    resultat = donnees.copy()
+    resultat.insert(0, "Confiance", np.where(est_attaque, probabilites, 1 - probabilites).round(4))
+    resultat.insert(0, "Prédiction", np.where(est_attaque, "Attaque", "Normal"))
+    resultat.insert(0, "Probabilité d'attaque", np.round(probabilites, 4))
+
+    nb_attaques = int(est_attaque.sum())
+    nb_normales = len(resultat) - nb_attaques
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        carte("Connexions analysées", format_nombre(len(resultat)), COULEUR_NEUTRE)
+    with c2:
+        carte("🟢 Normales", format_nombre(nb_normales), COULEUR_NORMAL)
+    with c3:
+        carte("🔴 Attaques détectées", format_nombre(nb_attaques), COULEUR_ATTAQUE)
+    with c4:
+        carte("Part d'attaques", f"{nb_attaques / len(resultat) * 100:.1f} %", COULEUR_ORANGE)
+
+    with st.container(border=True):
+        st.write("Distribution des probabilités d'attaque (la ligne verticale est le seuil de décision)")
+        df_proba = pd.DataFrame({"proba": probabilites})
+        histogramme = (
+            alt.Chart(df_proba)
+            .mark_bar(color=COULEUR_NEUTRE)
+            .encode(
+                x=alt.X("proba:Q", bin=alt.Bin(maxbins=20), title="Probabilité d'attaque"),
+                y=alt.Y("count():Q", title="Connexions"),
+            )
+        )
+        ligne_seuil = (
+            alt.Chart(pd.DataFrame({"s": [seuil]}))
+            .mark_rule(color=COULEUR_ATTAQUE, strokeWidth=2)
+            .encode(x="s:Q")
+        )
+        st.altair_chart((histogramme + ligne_seuil).properties(height=260))
+
+    st.subheader("Résultats")
+    st.dataframe(resultat.head(1000), hide_index=True)
+    if len(resultat) > 1000:
+        st.caption(f"Les 1 000 premières lignes sur {format_nombre(len(resultat))} sont affichées ; le fichier téléchargé contient tout.")
+    st.download_button(
+        "Télécharger les prédictions (CSV)",
+        resultat.to_csv(index=False).encode("utf-8"),
+        file_name="predictions.csv",
+        mime="text/csv",
+    )
+
+    if "label" in donnees.columns:
+        vrai = pd.to_numeric(donnees["label"], errors="coerce")
+        valide = vrai.isin([0, 1])
+        if valide.sum() > 0:
+            from sklearn.metrics import (
+                accuracy_score,
+                confusion_matrix,
+                f1_score,
+                precision_score,
+                recall_score,
+            )
+
+            y = vrai[valide].astype(int)
+            pred = est_attaque[valide.to_numpy()].astype(int)
+            st.subheader("Évaluation (le fichier contient la colonne label)")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Accuracy", f"{accuracy_score(y, pred):.4f}")
+            m2.metric("Precision", f"{precision_score(y, pred, zero_division=0):.4f}")
+            m3.metric("Recall", f"{recall_score(y, pred, zero_division=0):.4f}")
+            m4.metric("F1-score", f"{f1_score(y, pred, zero_division=0):.4f}")
+            matrice = pd.DataFrame(
+                confusion_matrix(y, pred, labels=[0, 1]),
+                index=["Réel : Normal", "Réel : Attaque"],
+                columns=["Prédit : Normal", "Prédit : Attaque"],
+            )
+            st.write("Matrice de confusion")
+            st.dataframe(matrice)
+
+
+def page_prediction_lot():
+    st.title("📦 Prédiction par lot")
+    st.write(
+        "Importe un fichier CSV de connexions réseau au format UNSW-NB15 : le modèle (Random Forest "
+        "optimisé) calcule la probabilité d'attaque de chaque ligne, puis tu télécharges les prédictions. "
+        "Si le fichier contient la colonne `label`, la page évalue aussi le modèle."
+    )
+
+    try:
+        preprocesseur, modele, infos = charger_ressources_modele()
+    except FileNotFoundError as erreur:
+        st.error(
+            f"Fichier du modèle introuvable ({erreur.filename}). "
+            "Exécute les notebooks 02 et 03 pour générer le dossier `models/`."
+        )
+        st.stop()
+
+    with st.expander("Pas de fichier sous la main ? Télécharge un exemple"):
+        exemple = load_data().sample(200, random_state=42)
+        st.download_button(
+            "Télécharger un fichier exemple (200 connexions du jeu UNSW-NB15)",
+            exemple.to_csv(index=False).encode("utf-8"),
+            file_name="exemple_connexions.csv",
+            mime="text/csv",
+        )
+        st.caption(
+            "Colonnes attendues : " + ", ".join(infos["colonnes"]) + ". "
+            "Une colonne absente est remplacée par sa valeur typique ; les colonnes en trop sont ignorées."
+        )
+
+    fichier = st.file_uploader("Choisis un fichier CSV", type="csv", key="fichier_lot")
+    seuil = st.slider(
+        "Seuil de décision : probabilité d'attaque à partir de laquelle une connexion est classée « Attaque »",
+        min_value=0.05,
+        max_value=0.95,
+        value=0.5,
+        step=0.05,
+    )
+
+    if fichier is None:
+        st.info("Importe un fichier CSV pour lancer la prédiction.")
+        st.stop()
+
+    try:
+        donnees = pd.read_csv(fichier)
+    except Exception as erreur:
+        st.error(f"Impossible de lire ce fichier : {erreur}")
+        st.stop()
+    if donnees.empty:
+        st.warning("Le fichier ne contient aucune ligne.")
+        st.stop()
+
+    connues = [c for c in infos["colonnes"] if c in donnees.columns]
+    if len(connues) < 5:
+        st.error(
+            f"Seulement {len(connues)} colonne(s) du modèle trouvée(s) dans ce fichier : "
+            "il ne ressemble pas à du UNSW-NB15. Vérifie le séparateur et les noms de colonnes."
+        )
+        st.stop()
+
+    probabilites, rapport = calculer_probabilites(donnees, preprocesseur, modele, infos)
+
+    if rapport["colonnes_absentes"]:
+        st.warning(
+            f"{len(rapport['colonnes_absentes'])} colonne(s) absente(s) remplacée(s) par leur valeur typique : "
+            + ", ".join(rapport["colonnes_absentes"])
+        )
+    if rapport["valeurs_corrigees"]:
+        detail = ", ".join(f"{c} ({n})" for c, n in rapport["valeurs_corrigees"].items())
+        st.warning(f"Valeurs vides ou illisibles remplacées par la valeur typique : {detail}")
+
+    afficher_resultats_lot(donnees, probabilites, seuil)
+
+
+NIVEAUX_RISQUE = [
+    (0.2, "Très faible", "#2ecc71"),
+    (0.4, "Faible", "#f1c40f"),
+    (0.6, "Modéré", "#e67e22"),
+    (0.8, "Élevé", "#e74c3c"),
+    (1.01, "Critique", "#c0392b"),
+]
+
+
+def niveau_de_risque(proba):
+    """Niveau (libellé, couleur) correspondant à une probabilité d'attaque."""
+    for limite, libelle, couleur in NIVEAUX_RISQUE:
+        if proba < limite:
+            return libelle, couleur
+    return NIVEAUX_RISQUE[-1][1], NIVEAUX_RISQUE[-1][2]
+
+
+@st.cache_data
+def importances_modele(_preprocesseur, _modele):
+    """10 variables les plus importantes pour la forêt aléatoire."""
+    noms = [n.split("__", 1)[-1] for n in _preprocesseur.get_feature_names_out()]
+    serie = pd.Series(_modele.feature_importances_, index=noms).sort_values(ascending=False).head(10)
+    return serie.rename("Importance").rename_axis("Variable").reset_index()
+
+
+def page_prediction():
+    st.title("🎯 Prédiction d'une connexion")
+    st.write(
+        "Renseigne les caractéristiques d'une connexion réseau : le modèle (Random Forest optimisé) "
+        "estime la probabilité qu'il s'agisse d'une **attaque**."
+    )
+
+    try:
+        preprocesseur, modele, infos = charger_ressources_modele()
+    except FileNotFoundError as erreur:
+        st.error(
+            f"Fichier du modèle introuvable ({erreur.filename}). "
+            "Exécute les notebooks 02 et 03 pour générer le dossier `models/`."
+        )
+        st.stop()
+
+    profils = {
+        "Valeurs typiques": {c: infos["defaut"][c] for c in infos["champs_num"] + infos["champs_cat"]},
+        "Exemple : connexion normale": infos["exemples"]["Normal"],
+        "Exemple : attaque": infos["exemples"]["Attaque"],
+    }
+    profil = st.radio("Point de départ du formulaire :", list(profils.keys()), horizontal=True)
+    depart = profils[profil]
+
+    with st.form("formulaire_prediction"):
+        st.write("**Variables numériques**")
+        saisie = {}
+        colonnes = st.columns(3)
+        for i, c in enumerate(infos["champs_num"]):
+            bas, haut = infos["bornes"][c]
+            entier = c in infos["entiers"]
+            with colonnes[i % 3]:
+                if entier:
+                    saisie[c] = st.number_input(
+                        c,
+                        min_value=int(bas),
+                        max_value=int(haut),
+                        value=int(min(max(depart[c], bas), haut)),
+                        step=1,
+                        key=f"rt_{profil}_{c}",
+                        help=f"Valeurs observées dans le jeu : de {int(bas)} à {int(haut)}",
+                    )
+                else:
+                    saisie[c] = st.number_input(
+                        c,
+                        min_value=float(bas),
+                        max_value=float(haut),
+                        value=float(min(max(depart[c], bas), haut)),
+                        step=0.01,
+                        format="%.6f",
+                        key=f"rt_{profil}_{c}",
+                        help=f"Valeurs observées dans le jeu : de {bas:g} à {haut:g}",
+                    )
+
+        st.write("**Variables catégorielles**")
+        colonnes = st.columns(3)
+        for i, c in enumerate(infos["champs_cat"]):
+            options = infos["options"][c]
+            defaut = depart[c] if depart[c] in options else options[0]
+            with colonnes[i % 3]:
+                saisie[c] = st.selectbox(
+                    c, options, index=options.index(defaut), key=f"rt_{profil}_{c}"
+                )
+
+        valider = st.form_submit_button("Prédire", type="primary")
+
+    st.caption(
+        f"Seules {len(infos['champs_num']) + len(infos['champs_cat'])} variables sur "
+        f"{len(infos['colonnes'])} sont saisies ; les autres sont fixées à leur valeur typique "
+        "(médiane ou valeur la plus fréquente du jeu d'entraînement). La probabilité est donc indicative."
+    )
+
+    if valider:
+        proba = predire(saisie, preprocesseur, modele, infos)
+        est_attaque = proba >= 0.5
+        niveau, couleur = niveau_de_risque(proba)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            carte("Probabilité d'attaque", f"{proba * 100:.1f} %", couleur)
+        with c2:
+            carte("Niveau de risque", niveau, couleur)
+        with c3:
+            carte(
+                "Décision (seuil 50 %)",
+                "🔴 Attaque" if est_attaque else "🟢 Normal",
+                COULEUR_ATTAQUE if est_attaque else COULEUR_NORMAL,
+            )
+        st.progress(float(min(max(proba, 0.0), 1.0)))
+        confiance = proba if est_attaque else 1 - proba
+        st.caption(
+            f"Confiance dans la décision : {confiance * 100:.1f} %. "
+            "Échelle : < 20 % très faible, < 40 % faible, < 60 % modéré, < 80 % élevé, au-delà critique."
+        )
+
+    with st.expander("Quelles variables comptent le plus pour ce modèle ?"):
+        importances = importances_modele(preprocesseur, modele)
+        graphique = (
+            alt.Chart(importances)
+            .mark_bar(color=COULEUR_NEUTRE)
+            .encode(
+                x=alt.X("Importance:Q", title="Importance (Random Forest)"),
+                y=alt.Y("Variable:N", sort="-x", title=None),
+                tooltip=["Variable", alt.Tooltip("Importance:Q", format=".3f")],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(graphique)
+        st.caption(
+            "Importance globale des 10 variables les plus utilisées par la forêt (variables "
+            "catégorielles encodées en One-Hot, par exemple `state_INT`)."
+        )
+
+
 def page_apropos():
     st.title("ℹ️ À propos du projet")
  
@@ -586,20 +1051,43 @@ page_accueil_obj = st.Page(page_accueil, title="Accueil", icon="🏠", default=T
 page_exploration_obj = st.Page(
     page_exploration, title="Exploration des données", icon="📊", url_path="exploration"
 )
+page_qualite_obj = st.Page(
+    page_controle_qualite, title="Contrôle qualité", icon="🧪", url_path="qualite"
+)
+page_prediction_obj = st.Page(
+    page_prediction, title="Prédiction", icon="🎯", url_path="prediction"
+)
+page_lot_obj = st.Page(
+    page_prediction_lot, title="Prédiction par lot", icon="📦", url_path="lot"
+)
 page_apropos_obj = st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos")
  
 navigation = st.navigation(
-    [page_accueil_obj, page_exploration_obj, page_apropos_obj], position="hidden"
+    [
+        page_accueil_obj,
+        page_exploration_obj,
+        page_qualite_obj,
+        page_prediction_obj,
+        page_lot_obj,
+        page_apropos_obj,
+    ],
+    position="hidden",
 )
  
 with st.container(border=True):
-    colonnes = st.columns([3, 1.3, 2.4, 1.3])
+    colonnes = st.columns([1.9, 1.0, 2.0, 1.6, 1.2, 1.7, 1.0])
     colonnes[0].markdown("#### 🛡️ IDS · UNSW-NB15")
     with colonnes[1]:
         st.page_link(page_accueil_obj, label="Accueil", icon="🏠")
     with colonnes[2]:
         st.page_link(page_exploration_obj, label="Exploration des données", icon="📊")
     with colonnes[3]:
+        st.page_link(page_qualite_obj, label="Contrôle qualité", icon="🧪")
+    with colonnes[4]:
+        st.page_link(page_prediction_obj, label="Prédiction", icon="🎯")
+    with colonnes[5]:
+        st.page_link(page_lot_obj, label="Prédiction par lot", icon="📦")
+    with colonnes[6]:
         st.page_link(page_apropos_obj, label="À propos", icon="ℹ️")
  
 navigation.run()
