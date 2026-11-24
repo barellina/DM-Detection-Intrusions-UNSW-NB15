@@ -5,6 +5,11 @@ import kagglehub
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from preprocessing import exemples_doublons, rapport_qualite  # noqa: E402
  
 st.set_page_config(
     page_title="Détection d'intrusions UNSW-NB15",
@@ -545,6 +550,164 @@ def page_exploration():
  
  
 
+@st.cache_data(show_spinner="Analyse de la qualité des données...")
+def analyser_qualite(data):
+    return rapport_qualite(data)
+
+
+@st.cache_data
+def lignes_dupliquees(data):
+    return exemples_doublons(data)
+
+
+def page_controle_qualite():
+    st.title("🧪 Contrôle qualité des données")
+    st.write(
+        "Avant de modéliser, on vérifie que les données sont saines : types des colonnes, "
+        "valeurs manquantes ou inconnues, doublons, valeurs aberrantes et cohérence entre les colonnes. "
+        "Tu peux contrôler le jeu UNSW-NB15 ou importer ton propre fichier CSV."
+    )
+
+    source = st.radio(
+        "Données à contrôler :",
+        ["Jeu UNSW-NB15 (entraînement)", "Importer un fichier CSV"],
+        horizontal=True,
+    )
+    if source.startswith("Jeu"):
+        df = load_data()
+    else:
+        fichier = st.file_uploader("Choisis un fichier CSV", type="csv")
+        if fichier is None:
+            st.info("Importe un fichier CSV pour lancer le contrôle.")
+            st.stop()
+        try:
+            df = pd.read_csv(fichier)
+        except Exception as erreur:
+            st.error(f"Impossible de lire ce fichier : {erreur}")
+            st.stop()
+        if df.empty:
+            st.warning("Le fichier ne contient aucune ligne.")
+            st.stop()
+
+    rapport = analyser_qualite(df)
+    resume = rapport["resume"]
+    types = rapport["types"]
+    coherence = rapport["coherence"]
+
+    nb_types_inattendus = int((types["Conforme"] != "✅").sum())
+    nb_controles_defaut = int((coherence["Verdict"] != "✅ OK").sum())
+    nb_alertes = (
+        nb_types_inattendus
+        + nb_controles_defaut
+        + int(resume["manquantes"] > 0)
+        + int(resume["doublons"] > 0)
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        carte("Lignes × colonnes", f"{format_nombre(resume['lignes'])} × {resume['colonnes']}", COULEUR_NEUTRE)
+    with c2:
+        carte("Valeurs manquantes", format_nombre(resume["manquantes"]), COULEUR_TURQUOISE)
+    with c3:
+        carte("Lignes dupliquées", format_nombre(resume["doublons"]), COULEUR_ORANGE)
+    with c4:
+        carte("Alertes", str(nb_alertes), COULEUR_ATTAQUE if nb_alertes else COULEUR_NORMAL)
+
+    if nb_alertes == 0:
+        st.success("Aucun problème détecté sur les types, les valeurs manquantes, les doublons et la cohérence.")
+    else:
+        st.warning(
+            f"{nb_alertes} point(s) à examiner : {nb_types_inattendus} type(s) de colonne inattendu(s), "
+            f"{nb_controles_defaut} contrôle(s) de cohérence en défaut, "
+            f"{format_nombre(resume['manquantes'])} case(s) vide(s), "
+            f"{format_nombre(resume['doublons'])} ligne(s) dupliquée(s)."
+        )
+
+    onglet1, onglet2, onglet3, onglet4, onglet5 = st.tabs(
+        [
+            "🔤 Types",
+            "❓ Manquantes et inconnues",
+            "♊ Doublons",
+            "📏 Valeurs aberrantes",
+            "✅ Cohérence",
+        ]
+    )
+
+    with onglet1:
+        st.subheader("Types des colonnes")
+        st.caption(
+            "Chaque colonne est comparée à son rôle attendu : variable numérique, variable "
+            "catégorielle (proto, service, state), cible (label, attack_cat) ou identifiant."
+        )
+        st.dataframe(types, hide_index=True)
+        st.download_button(
+            "Télécharger le tableau des types (CSV)",
+            types.to_csv(index=False).encode("utf-8"),
+            file_name="controle_types.csv",
+            mime="text/csv",
+        )
+
+    with onglet2:
+        st.subheader("Valeurs manquantes et valeurs inconnues")
+        gauche, droite = st.columns(2)
+        with gauche:
+            with st.container(border=True):
+                st.write("Cases vides par colonne")
+                st.dataframe(
+                    types[["Colonne", "Manquantes", "Taux manquant (%)"]], hide_index=True
+                )
+        with droite:
+            with st.container(border=True):
+                st.write("Valeurs inconnues codées « - » (colonnes texte)")
+                inconnues = rapport["inconnues"]
+                st.dataframe(inconnues, hide_index=True)
+                if not inconnues.empty:
+                    st.bar_chart(inconnues.set_index("Colonne")["Part (%)"], color=COULEUR_ORANGE)
+        st.caption(
+            "Une valeur « - » n'est pas une case vide pour pandas, mais c'est une information "
+            "manquante en pratique : elle doit être traitée explicitement (par exemple comme une catégorie à part)."
+        )
+
+    with onglet3:
+        st.subheader("Doublons")
+        st.write(
+            f"**{format_nombre(resume['doublons'])}** ligne(s) identique(s) à une autre "
+            f"({resume['doublons'] / resume['lignes'] * 100:.2f} % du jeu). "
+            "L'identifiant (`id`) est ignoré dans la comparaison, car il est unique par construction."
+        )
+        st.caption(
+            "Des lignes identiques réparties entre l'entraînement et la validation peuvent gonfler "
+            "artificiellement les scores d'un modèle."
+        )
+        if resume["doublons"] > 0:
+            st.write("Exemples (toutes les copies des premières lignes concernées) :")
+            st.dataframe(lignes_dupliquees(df), hide_index=True)
+
+    with onglet4:
+        st.subheader("Valeurs aberrantes (méthode de l'écart interquartile)")
+        st.caption(
+            "Une valeur est signalée si elle sort de l'intervalle [Q1 - 1,5 × IQR ; Q3 + 1,5 × IQR]. "
+            "Pour UNSW-NB15, ces valeurs extrêmes sont souvent des attaques : elles sont conservées."
+        )
+        aberrantes = rapport["aberrantes"]
+        if aberrantes.empty:
+            st.info("Aucune variable numérique à analyser.")
+        else:
+            st.dataframe(aberrantes, hide_index=True)
+            st.write("Part de valeurs hors bornes (15 variables les plus touchées)")
+            st.bar_chart(aberrantes.head(15).set_index("Variable")["Part (%)"], color=COULEUR_VIOLET)
+
+    with onglet5:
+        st.subheader("Contrôles de cohérence")
+        st.dataframe(coherence, hide_index=True)
+        st.download_button(
+            "Télécharger les contrôles (CSV)",
+            coherence.to_csv(index=False).encode("utf-8"),
+            file_name="controle_coherence.csv",
+            mime="text/csv",
+        )
+
+
 def page_apropos():
     st.title("ℹ️ À propos du projet")
  
@@ -586,20 +749,26 @@ page_accueil_obj = st.Page(page_accueil, title="Accueil", icon="🏠", default=T
 page_exploration_obj = st.Page(
     page_exploration, title="Exploration des données", icon="📊", url_path="exploration"
 )
+page_qualite_obj = st.Page(
+    page_controle_qualite, title="Contrôle qualité", icon="🧪", url_path="qualite"
+)
 page_apropos_obj = st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos")
  
 navigation = st.navigation(
-    [page_accueil_obj, page_exploration_obj, page_apropos_obj], position="hidden"
+    [page_accueil_obj, page_exploration_obj, page_qualite_obj, page_apropos_obj],
+    position="hidden",
 )
  
 with st.container(border=True):
-    colonnes = st.columns([3, 1.3, 2.4, 1.3])
+    colonnes = st.columns([2.6, 1.2, 2.3, 1.9, 1.2])
     colonnes[0].markdown("#### 🛡️ IDS · UNSW-NB15")
     with colonnes[1]:
         st.page_link(page_accueil_obj, label="Accueil", icon="🏠")
     with colonnes[2]:
         st.page_link(page_exploration_obj, label="Exploration des données", icon="📊")
     with colonnes[3]:
+        st.page_link(page_qualite_obj, label="Contrôle qualité", icon="🧪")
+    with colonnes[4]:
         st.page_link(page_apropos_obj, label="À propos", icon="ℹ️")
  
 navigation.run()
