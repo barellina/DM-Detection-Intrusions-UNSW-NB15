@@ -9,7 +9,7 @@ import streamlit as st
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from models import charger_modele, predire_lot  # noqa: E402
+from models import charger_modele, predire, predire_lot  # noqa: E402
 from preprocessing import exemples_doublons, rapport_qualite  # noqa: E402
  
 st.set_page_config(
@@ -871,6 +871,145 @@ def page_prediction_lot():
     afficher_resultats_lot(donnees, probabilites, seuil)
 
 
+NIVEAUX_RISQUE = [
+    (0.2, "Très faible", "#2ecc71"),
+    (0.4, "Faible", "#f1c40f"),
+    (0.6, "Modéré", "#e67e22"),
+    (0.8, "Élevé", "#e74c3c"),
+    (1.01, "Critique", "#c0392b"),
+]
+
+
+def niveau_de_risque(proba):
+    """Niveau (libellé, couleur) correspondant à une probabilité d'attaque."""
+    for limite, libelle, couleur in NIVEAUX_RISQUE:
+        if proba < limite:
+            return libelle, couleur
+    return NIVEAUX_RISQUE[-1][1], NIVEAUX_RISQUE[-1][2]
+
+
+@st.cache_data
+def importances_modele(_preprocesseur, _modele):
+    """10 variables les plus importantes pour la forêt aléatoire."""
+    noms = [n.split("__", 1)[-1] for n in _preprocesseur.get_feature_names_out()]
+    serie = pd.Series(_modele.feature_importances_, index=noms).sort_values(ascending=False).head(10)
+    return serie.rename("Importance").rename_axis("Variable").reset_index()
+
+
+def page_prediction():
+    st.title("🎯 Prédiction d'une connexion")
+    st.write(
+        "Renseigne les caractéristiques d'une connexion réseau : le modèle (Random Forest optimisé) "
+        "estime la probabilité qu'il s'agisse d'une **attaque**."
+    )
+
+    try:
+        preprocesseur, modele, infos = charger_ressources_modele()
+    except FileNotFoundError as erreur:
+        st.error(
+            f"Fichier du modèle introuvable ({erreur.filename}). "
+            "Exécute les notebooks 02 et 03 pour générer le dossier `models/`."
+        )
+        st.stop()
+
+    profils = {
+        "Valeurs typiques": {c: infos["defaut"][c] for c in infos["champs_num"] + infos["champs_cat"]},
+        "Exemple : connexion normale": infos["exemples"]["Normal"],
+        "Exemple : attaque": infos["exemples"]["Attaque"],
+    }
+    profil = st.radio("Point de départ du formulaire :", list(profils.keys()), horizontal=True)
+    depart = profils[profil]
+
+    with st.form("formulaire_prediction"):
+        st.write("**Variables numériques**")
+        saisie = {}
+        colonnes = st.columns(3)
+        for i, c in enumerate(infos["champs_num"]):
+            bas, haut = infos["bornes"][c]
+            entier = c in infos["entiers"]
+            with colonnes[i % 3]:
+                if entier:
+                    saisie[c] = st.number_input(
+                        c,
+                        min_value=int(bas),
+                        max_value=int(haut),
+                        value=int(min(max(depart[c], bas), haut)),
+                        step=1,
+                        key=f"rt_{profil}_{c}",
+                        help=f"Valeurs observées dans le jeu : de {int(bas)} à {int(haut)}",
+                    )
+                else:
+                    saisie[c] = st.number_input(
+                        c,
+                        min_value=float(bas),
+                        max_value=float(haut),
+                        value=float(min(max(depart[c], bas), haut)),
+                        step=0.01,
+                        format="%.6f",
+                        key=f"rt_{profil}_{c}",
+                        help=f"Valeurs observées dans le jeu : de {bas:g} à {haut:g}",
+                    )
+
+        st.write("**Variables catégorielles**")
+        colonnes = st.columns(3)
+        for i, c in enumerate(infos["champs_cat"]):
+            options = infos["options"][c]
+            defaut = depart[c] if depart[c] in options else options[0]
+            with colonnes[i % 3]:
+                saisie[c] = st.selectbox(
+                    c, options, index=options.index(defaut), key=f"rt_{profil}_{c}"
+                )
+
+        valider = st.form_submit_button("Prédire", type="primary")
+
+    st.caption(
+        f"Seules {len(infos['champs_num']) + len(infos['champs_cat'])} variables sur "
+        f"{len(infos['colonnes'])} sont saisies ; les autres sont fixées à leur valeur typique "
+        "(médiane ou valeur la plus fréquente du jeu d'entraînement). La probabilité est donc indicative."
+    )
+
+    if valider:
+        proba = predire(saisie, preprocesseur, modele, infos)
+        est_attaque = proba >= 0.5
+        niveau, couleur = niveau_de_risque(proba)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            carte("Probabilité d'attaque", f"{proba * 100:.1f} %", couleur)
+        with c2:
+            carte("Niveau de risque", niveau, couleur)
+        with c3:
+            carte(
+                "Décision (seuil 50 %)",
+                "🔴 Attaque" if est_attaque else "🟢 Normal",
+                COULEUR_ATTAQUE if est_attaque else COULEUR_NORMAL,
+            )
+        st.progress(float(min(max(proba, 0.0), 1.0)))
+        confiance = proba if est_attaque else 1 - proba
+        st.caption(
+            f"Confiance dans la décision : {confiance * 100:.1f} %. "
+            "Échelle : < 20 % très faible, < 40 % faible, < 60 % modéré, < 80 % élevé, au-delà critique."
+        )
+
+    with st.expander("Quelles variables comptent le plus pour ce modèle ?"):
+        importances = importances_modele(preprocesseur, modele)
+        graphique = (
+            alt.Chart(importances)
+            .mark_bar(color=COULEUR_NEUTRE)
+            .encode(
+                x=alt.X("Importance:Q", title="Importance (Random Forest)"),
+                y=alt.Y("Variable:N", sort="-x", title=None),
+                tooltip=["Variable", alt.Tooltip("Importance:Q", format=".3f")],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(graphique)
+        st.caption(
+            "Importance globale des 10 variables les plus utilisées par la forêt (variables "
+            "catégorielles encodées en One-Hot, par exemple `state_INT`)."
+        )
+
+
 def page_apropos():
     st.title("ℹ️ À propos du projet")
  
@@ -915,18 +1054,28 @@ page_exploration_obj = st.Page(
 page_qualite_obj = st.Page(
     page_controle_qualite, title="Contrôle qualité", icon="🧪", url_path="qualite"
 )
+page_prediction_obj = st.Page(
+    page_prediction, title="Prédiction", icon="🎯", url_path="prediction"
+)
 page_lot_obj = st.Page(
     page_prediction_lot, title="Prédiction par lot", icon="📦", url_path="lot"
 )
 page_apropos_obj = st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos")
  
 navigation = st.navigation(
-    [page_accueil_obj, page_exploration_obj, page_qualite_obj, page_lot_obj, page_apropos_obj],
+    [
+        page_accueil_obj,
+        page_exploration_obj,
+        page_qualite_obj,
+        page_prediction_obj,
+        page_lot_obj,
+        page_apropos_obj,
+    ],
     position="hidden",
 )
  
 with st.container(border=True):
-    colonnes = st.columns([2.2, 1.1, 2.1, 1.7, 1.8, 1.1])
+    colonnes = st.columns([1.9, 1.0, 2.0, 1.6, 1.2, 1.7, 1.0])
     colonnes[0].markdown("#### 🛡️ IDS · UNSW-NB15")
     with colonnes[1]:
         st.page_link(page_accueil_obj, label="Accueil", icon="🏠")
@@ -935,8 +1084,10 @@ with st.container(border=True):
     with colonnes[3]:
         st.page_link(page_qualite_obj, label="Contrôle qualité", icon="🧪")
     with colonnes[4]:
-        st.page_link(page_lot_obj, label="Prédiction par lot", icon="📦")
+        st.page_link(page_prediction_obj, label="Prédiction", icon="🎯")
     with colonnes[5]:
+        st.page_link(page_lot_obj, label="Prédiction par lot", icon="📦")
+    with colonnes[6]:
         st.page_link(page_apropos_obj, label="À propos", icon="ℹ️")
  
 navigation.run()
