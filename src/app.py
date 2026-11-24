@@ -9,6 +9,7 @@ import streamlit as st
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from models import charger_modele, predire_lot  # noqa: E402
 from preprocessing import exemples_doublons, rapport_qualite  # noqa: E402
  
 st.set_page_config(
@@ -708,6 +709,168 @@ def page_controle_qualite():
         )
 
 
+@st.cache_resource(show_spinner="Chargement du modèle...")
+def charger_ressources_modele():
+    return charger_modele()
+
+
+@st.cache_data(show_spinner="Calcul des prédictions...")
+def calculer_probabilites(data, _preprocesseur, _modele, _infos):
+    return predire_lot(data, _preprocesseur, _modele, _infos)
+
+
+def afficher_resultats_lot(donnees, probabilites, seuil):
+    """Cartes, graphique, tableau téléchargeable et, si le fichier a une colonne label, évaluation."""
+    est_attaque = probabilites >= seuil
+    resultat = donnees.copy()
+    resultat.insert(0, "Confiance", np.where(est_attaque, probabilites, 1 - probabilites).round(4))
+    resultat.insert(0, "Prédiction", np.where(est_attaque, "Attaque", "Normal"))
+    resultat.insert(0, "Probabilité d'attaque", np.round(probabilites, 4))
+
+    nb_attaques = int(est_attaque.sum())
+    nb_normales = len(resultat) - nb_attaques
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        carte("Connexions analysées", format_nombre(len(resultat)), COULEUR_NEUTRE)
+    with c2:
+        carte("🟢 Normales", format_nombre(nb_normales), COULEUR_NORMAL)
+    with c3:
+        carte("🔴 Attaques détectées", format_nombre(nb_attaques), COULEUR_ATTAQUE)
+    with c4:
+        carte("Part d'attaques", f"{nb_attaques / len(resultat) * 100:.1f} %", COULEUR_ORANGE)
+
+    with st.container(border=True):
+        st.write("Distribution des probabilités d'attaque (la ligne verticale est le seuil de décision)")
+        df_proba = pd.DataFrame({"proba": probabilites})
+        histogramme = (
+            alt.Chart(df_proba)
+            .mark_bar(color=COULEUR_NEUTRE)
+            .encode(
+                x=alt.X("proba:Q", bin=alt.Bin(maxbins=20), title="Probabilité d'attaque"),
+                y=alt.Y("count():Q", title="Connexions"),
+            )
+        )
+        ligne_seuil = (
+            alt.Chart(pd.DataFrame({"s": [seuil]}))
+            .mark_rule(color=COULEUR_ATTAQUE, strokeWidth=2)
+            .encode(x="s:Q")
+        )
+        st.altair_chart((histogramme + ligne_seuil).properties(height=260))
+
+    st.subheader("Résultats")
+    st.dataframe(resultat.head(1000), hide_index=True)
+    if len(resultat) > 1000:
+        st.caption(f"Les 1 000 premières lignes sur {format_nombre(len(resultat))} sont affichées ; le fichier téléchargé contient tout.")
+    st.download_button(
+        "Télécharger les prédictions (CSV)",
+        resultat.to_csv(index=False).encode("utf-8"),
+        file_name="predictions.csv",
+        mime="text/csv",
+    )
+
+    if "label" in donnees.columns:
+        vrai = pd.to_numeric(donnees["label"], errors="coerce")
+        valide = vrai.isin([0, 1])
+        if valide.sum() > 0:
+            from sklearn.metrics import (
+                accuracy_score,
+                confusion_matrix,
+                f1_score,
+                precision_score,
+                recall_score,
+            )
+
+            y = vrai[valide].astype(int)
+            pred = est_attaque[valide.to_numpy()].astype(int)
+            st.subheader("Évaluation (le fichier contient la colonne label)")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Accuracy", f"{accuracy_score(y, pred):.4f}")
+            m2.metric("Precision", f"{precision_score(y, pred, zero_division=0):.4f}")
+            m3.metric("Recall", f"{recall_score(y, pred, zero_division=0):.4f}")
+            m4.metric("F1-score", f"{f1_score(y, pred, zero_division=0):.4f}")
+            matrice = pd.DataFrame(
+                confusion_matrix(y, pred, labels=[0, 1]),
+                index=["Réel : Normal", "Réel : Attaque"],
+                columns=["Prédit : Normal", "Prédit : Attaque"],
+            )
+            st.write("Matrice de confusion")
+            st.dataframe(matrice)
+
+
+def page_prediction_lot():
+    st.title("📦 Prédiction par lot")
+    st.write(
+        "Importe un fichier CSV de connexions réseau au format UNSW-NB15 : le modèle (Random Forest "
+        "optimisé) calcule la probabilité d'attaque de chaque ligne, puis tu télécharges les prédictions. "
+        "Si le fichier contient la colonne `label`, la page évalue aussi le modèle."
+    )
+
+    try:
+        preprocesseur, modele, infos = charger_ressources_modele()
+    except FileNotFoundError as erreur:
+        st.error(
+            f"Fichier du modèle introuvable ({erreur.filename}). "
+            "Exécute les notebooks 02 et 03 pour générer le dossier `models/`."
+        )
+        st.stop()
+
+    with st.expander("Pas de fichier sous la main ? Télécharge un exemple"):
+        exemple = load_data().sample(200, random_state=42)
+        st.download_button(
+            "Télécharger un fichier exemple (200 connexions du jeu UNSW-NB15)",
+            exemple.to_csv(index=False).encode("utf-8"),
+            file_name="exemple_connexions.csv",
+            mime="text/csv",
+        )
+        st.caption(
+            "Colonnes attendues : " + ", ".join(infos["colonnes"]) + ". "
+            "Une colonne absente est remplacée par sa valeur typique ; les colonnes en trop sont ignorées."
+        )
+
+    fichier = st.file_uploader("Choisis un fichier CSV", type="csv", key="fichier_lot")
+    seuil = st.slider(
+        "Seuil de décision : probabilité d'attaque à partir de laquelle une connexion est classée « Attaque »",
+        min_value=0.05,
+        max_value=0.95,
+        value=0.5,
+        step=0.05,
+    )
+
+    if fichier is None:
+        st.info("Importe un fichier CSV pour lancer la prédiction.")
+        st.stop()
+
+    try:
+        donnees = pd.read_csv(fichier)
+    except Exception as erreur:
+        st.error(f"Impossible de lire ce fichier : {erreur}")
+        st.stop()
+    if donnees.empty:
+        st.warning("Le fichier ne contient aucune ligne.")
+        st.stop()
+
+    connues = [c for c in infos["colonnes"] if c in donnees.columns]
+    if len(connues) < 5:
+        st.error(
+            f"Seulement {len(connues)} colonne(s) du modèle trouvée(s) dans ce fichier : "
+            "il ne ressemble pas à du UNSW-NB15. Vérifie le séparateur et les noms de colonnes."
+        )
+        st.stop()
+
+    probabilites, rapport = calculer_probabilites(donnees, preprocesseur, modele, infos)
+
+    if rapport["colonnes_absentes"]:
+        st.warning(
+            f"{len(rapport['colonnes_absentes'])} colonne(s) absente(s) remplacée(s) par leur valeur typique : "
+            + ", ".join(rapport["colonnes_absentes"])
+        )
+    if rapport["valeurs_corrigees"]:
+        detail = ", ".join(f"{c} ({n})" for c, n in rapport["valeurs_corrigees"].items())
+        st.warning(f"Valeurs vides ou illisibles remplacées par la valeur typique : {detail}")
+
+    afficher_resultats_lot(donnees, probabilites, seuil)
+
+
 def page_apropos():
     st.title("ℹ️ À propos du projet")
  
@@ -752,15 +915,18 @@ page_exploration_obj = st.Page(
 page_qualite_obj = st.Page(
     page_controle_qualite, title="Contrôle qualité", icon="🧪", url_path="qualite"
 )
+page_lot_obj = st.Page(
+    page_prediction_lot, title="Prédiction par lot", icon="📦", url_path="lot"
+)
 page_apropos_obj = st.Page(page_apropos, title="À propos", icon="ℹ️", url_path="apropos")
  
 navigation = st.navigation(
-    [page_accueil_obj, page_exploration_obj, page_qualite_obj, page_apropos_obj],
+    [page_accueil_obj, page_exploration_obj, page_qualite_obj, page_lot_obj, page_apropos_obj],
     position="hidden",
 )
  
 with st.container(border=True):
-    colonnes = st.columns([2.6, 1.2, 2.3, 1.9, 1.2])
+    colonnes = st.columns([2.2, 1.1, 2.1, 1.7, 1.8, 1.1])
     colonnes[0].markdown("#### 🛡️ IDS · UNSW-NB15")
     with colonnes[1]:
         st.page_link(page_accueil_obj, label="Accueil", icon="🏠")
@@ -769,6 +935,8 @@ with st.container(border=True):
     with colonnes[3]:
         st.page_link(page_qualite_obj, label="Contrôle qualité", icon="🧪")
     with colonnes[4]:
+        st.page_link(page_lot_obj, label="Prédiction par lot", icon="📦")
+    with colonnes[5]:
         st.page_link(page_apropos_obj, label="À propos", icon="ℹ️")
  
 navigation.run()
