@@ -1,5 +1,6 @@
 venv/
-.ipynb_checkpoints\/n__pycache__/
+.ipynb_checkpoints/
+__pycache__/
 *.pyc
-data/raw/*.csv.
+data/raw/*.csv
 data/processed/*.joblib
