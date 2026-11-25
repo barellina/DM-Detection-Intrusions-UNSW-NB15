@@ -5,3 +5,4 @@ Naive Bayes (Bernoulli),{'alpha': 0.01},0.7813
 K-NN (sous-echantillon 20000),"{'metric': 'manhattan', 'n_neighbors': 21, 'weights': 'distance'}",0.9568
 Random Forest (sous-echantillon 40000),"{'n_estimators': 300, 'min_samples_leaf': 2, 'max_features': 'sqrt', 'max_depth': 30, 'class_weight': None}",0.9639
 SVM (sous-echantillon 6000),"{'C': 10, 'gamma': 0.01, 'kernel': 'rbf'}",0.9559
+XGBoost (sous-echantillon 40000),"{'subsample': 1.0, 'n_estimators': 200, 'max_depth': 10, 'learning_rate': 0.1, 'colsample_bytree': 1.0}",0.9655
